@@ -60,8 +60,8 @@ ZenithGemini provides a dedicated interface for accessing Google Gemini's advanc
 
 ## Example Interaction
 
-User: /generate What are the primary export goods of Japan?
-Bot: Japan's primary export goods include automobiles, electronics, and machinery.
+User: `/generate What are the primary export goods of Japan?`<br>
+Bot: `Japan's primary export goods include automobiles, electronics, and machinery.`
 
 
 ## Contribution
