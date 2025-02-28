@@ -1,8 +1,8 @@
 // Services module
-use crate::app::config;
-use crate::gemini::models;
+use crate::{app::config, models::gemini::GeminiResponse};
 use reqwest;
 use serde_json::json;
+use teloxide::utils::markdown;
 use std::sync::Arc;
 
 pub async fn query_gemini_api(
@@ -39,7 +39,7 @@ pub async fn query_gemini_api(
         println!("Chunk: {}", &String::from_utf8_lossy(&chunk));
     }
 
-    let result: models::GeminiResponse = serde_json::from_str(&response_text).unwrap();
+    let result: GeminiResponse = serde_json::from_str(&response_text).unwrap();
 
     let mut result_text = result.candidates[0].content.parts[0].text.clone();
 
@@ -58,7 +58,8 @@ pub async fn query_gemini_api(
         }
     }
 
-    escape_markdown(&result_text)
+    markdown::escape(&result_text)
+    // escape_markdown(&result_text)
 }
 
 pub fn escape_markdown(s: &str) -> String {

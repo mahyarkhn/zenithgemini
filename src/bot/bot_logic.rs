@@ -1,6 +1,6 @@
 // Bot logic module
 use crate::gemini::services::{escape_markdown, query_gemini_api};
-use crate::AppConfig;
+use crate::{utils, AppConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
 use teloxide::dispatching::dialogue::GetChatId;
@@ -10,6 +10,7 @@ use teloxide::types::{
     InputFile, InputMessageContent, InputMessageContentText, ReplyParameters, Update,
 };
 use teloxide::utils::command::BotCommands;
+use teloxide::utils::html;
 use tokio::fs::File;
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
@@ -37,6 +38,8 @@ enum Command {
     Generate(String),
     #[command(description = "handle a username and an age.", parse_with = "split")]
     UsernameAndAge { username: String, age: u8 },
+    #[command(description = "print developer information", parse_with = "split")]
+    DeveloperInfo,
 }
 
 pub async fn setup_dispatcher(
@@ -50,11 +53,13 @@ pub async fn setup_dispatcher(
             eprintln!("{_u:#?}"); // Print the update to the console with inspect
         })
         .branch(
-            Update::filter_message().branch(
-                dptree::entry()
-                    .filter_command::<Command>()
-                    .endpoint(message_handler),
-            ),
+            Update::filter_message()
+                .branch(
+                    dptree::entry()
+                        .filter_command::<Command>()
+                        .endpoint(command_handler),
+                )
+                .endpoint(message_handler),
         )
         .branch(Update::filter_inline_query().branch(dptree::entry().endpoint(inline_handler)));
 
@@ -64,7 +69,18 @@ pub async fn setup_dispatcher(
         .build()
 }
 
-async fn message_handler(
+async fn message_handler(bot: Bot, msg: Message, config: Arc<AppConfig>) -> ResponseResult<()> {
+    if let Some(text) = msg.text().clone() {
+        generate_response(bot, &msg, text.to_string(), config).await?;
+    } else {
+        bot.send_message(msg.chat.id, Command::descriptions().to_string())
+            .await?;
+    }
+
+    respond(())
+}
+
+async fn command_handler(
     bot: Bot,
     msg: Message,
     cmd: Command,
@@ -76,7 +92,7 @@ async fn message_handler(
                 .await?;
         }
         Command::Generate(text) => {
-            generate_response(bot, msg, text, config).await?;
+            generate_response(bot, &msg, text, config).await?;
         }
         Command::UsernameAndAge { username, age } => {
             bot.send_message(
@@ -85,14 +101,36 @@ async fn message_handler(
             )
             .await?;
         }
+        Command::DeveloperInfo => {
+            send_developer_info(&bot, &msg).await?;
+        }
     };
+
+    respond(())
+}
+
+async fn send_developer_info(bot: &Bot, msg: &Message) -> ResponseResult<()> {
+    let profile_link = format!("tg://user?id=6057706319");
+    let github_link = format!("https://github.com/mahyarkhn");
+
+    let text = format!(
+        "ZenithGemini created by {}\r\n{}\r\n{}\r\nContact me at {}",
+        html::bold("MahyarKhn"),
+        html::link(&profile_link, "View Profile"),
+        html::link(&github_link, "View Github"),
+        html::italic("mahyarkhn@proton.me"),
+    );
+
+    bot.send_message(msg.chat.id, text)
+        .parse_mode(teloxide::types::ParseMode::Html)
+        .await?;
 
     respond(())
 }
 
 async fn generate_response(
     bot: Bot,
-    msg: Message,
+    msg: &Message,
     text: String,
     config: Arc<AppConfig>,
 ) -> ResponseResult<()> {
@@ -140,13 +178,23 @@ async fn generate_response(
                 .await?;
         }
     } else {
-        bot.edit_message_text(
-            msg.chat_id().unwrap(),
-            response_message.id,
-            format!("{}\r\n\r\n🌟 _*@zenithgeminibot*_", gemini_response),
-        )
-        .parse_mode(teloxide::types::ParseMode::MarkdownV2)
-        .await?;
+        let res = bot
+            .edit_message_text(
+                msg.chat_id().unwrap(),
+                response_message.id,
+                format!("{}\r\n\r\n🌟 _*@zenithgeminibot*_", gemini_response),
+            )
+            .parse_mode(teloxide::types::ParseMode::MarkdownV2)
+            .await;
+        if res.is_err() {
+            // markdown especial chars may create error sometimes
+            bot.edit_message_text(
+                msg.chat_id().unwrap(),
+                response_message.id,
+                format!("{}\r\n\r\n🌟 @zenithgeminibot", gemini_response),
+            )
+            .await?;
+        }
     }
 
     Ok(())
@@ -186,7 +234,7 @@ async fn inline_handler(
             let mut current_query_trimmed = current_query.clone();
             current_query_trimmed.truncate(current_query_trimmed.len() - 2);
             process_gemini_request(
-                bot_clone,
+                &bot_clone,
                 query_id,
                 user_id as i64,
                 current_query_trimmed,
@@ -203,30 +251,28 @@ async fn inline_handler(
 }
 
 async fn process_gemini_request(
-    bot: Bot,
+    bot: &Bot,
     query_id: String,
     user_id: i64,
     query: String,
     deps: Arc<AppConfig>,
     user_states: UserStates,
 ) {
+    let query_result = query_gemini_api(
+        &query,
+        Some(vec![
+            "be extra precise",
+            "do not exceed 4700 chars at any chance",
+        ]),
+        deps,
+    )
+    .await;
     let results = vec![teloxide::types::InlineQueryResultArticle::new(
         "1",
-        format!("Ask Gemini: {}", &query),
+        format!("Ask Gemini: {}\r\n{}", &query, utils::string::truncate_text(&query_result, 100)),
         InputMessageContent::Text(
-            InputMessageContentText::new(format!(
-                "{}\r\n\r\n🌟 _*@zenithgeminibot*_",
-                query_gemini_api(
-                    &query,
-                    Some(vec![
-                        "be extra precise",
-                        "do not exceed 4700 chars at any chance"
-                    ]),
-                    deps
-                )
-                .await
-            ))
-            .parse_mode(teloxide::types::ParseMode::MarkdownV2),
+            InputMessageContentText::new(format!("{}\r\n\r\n🌟 _*@zenithgeminibot*_", query_result))
+                .parse_mode(teloxide::types::ParseMode::MarkdownV2),
         ),
     )
     .into()];

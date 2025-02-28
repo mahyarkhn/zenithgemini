@@ -5,11 +5,14 @@ use teloxide::prelude::*;
 use tokio::sync::Mutex;
 use app::config::AppConfig;
 
+#[cfg(test)]
+mod tests;
 mod bot;
 mod gemini;
 mod app;
-
-extern crate pretty_env_logger;
+mod db;
+mod models;
+mod utils;
 
 #[tokio::main]
 async fn main() {
