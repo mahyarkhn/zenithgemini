@@ -25,7 +25,7 @@ async fn test_migration_and_history_insert() -> Result<(), sqlx::Error> {
     assert!(table_exists.is_ok());
     assert_eq!(table_exists.unwrap().0, 1);
 
-    let message = Message::new(1, 2, 4, Some("content".to_string()), unix_timestamp());
+    let message = Message::new(1, 2, 4, Some("content".to_string()), Some("response".to_string()), unix_timestamp());
 
     message.insert(&db).await.unwrap();
 
@@ -37,7 +37,7 @@ async fn test_migration_and_history_insert() -> Result<(), sqlx::Error> {
 async fn test_message_insert() -> Result<(), sqlx::Error> {
     let db = setup_test_database().await?;
 
-    let message = Message::new(1, 2, 4, Some("content".to_string()), unix_timestamp());
+    let message = Message::new(1, 2, 4, Some("content".to_string()), Some("response".to_string()), unix_timestamp());
 
     message.insert(&db).await.unwrap();
 
@@ -51,7 +51,7 @@ async fn test_message_insert() -> Result<(), sqlx::Error> {
 async fn test_message_insert_delete_sender_id() -> Result<(), sqlx::Error> {
     let db = setup_test_database().await?;
 
-    let message = Message::new(1, 2, 4, Some("content".to_string()), unix_timestamp());
+    let message = Message::new(1, 2, 4, Some("content".to_string()), Some("response".to_string()), unix_timestamp());
 
     message.insert(&db).await.unwrap();
 
@@ -69,7 +69,7 @@ async fn test_message_insert_delete_sender_id() -> Result<(), sqlx::Error> {
 async fn test_message_insert_delete_id() -> Result<(), sqlx::Error> {
     let db = setup_test_database().await?;
 
-    let message = Message::new(1, 2, 4, Some("content".to_string()), unix_timestamp());
+    let message = Message::new(1, 2, 4, Some("content".to_string()), Some("response".to_string()), unix_timestamp());
 
     message.insert(&db).await.unwrap();
 

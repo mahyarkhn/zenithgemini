@@ -12,6 +12,17 @@ pub struct MessageHistory {
 
 #[allow(dead_code)]
 impl MessageHistory {
+    pub fn new(
+        user_id: i64,
+        messages: Vec<i64>,
+    ) -> Self {
+        MessageHistory {
+            id: 0,
+            user_id,
+            messages,
+        }
+    }
+
     pub async fn insert(&self, db: &Database) -> Result<(), sqlx::Error> {
         sqlx::query("INSERT OR REPLACE INTO message_history (user_id, messages) VALUES (?, ?)")
             .bind(self.user_id)

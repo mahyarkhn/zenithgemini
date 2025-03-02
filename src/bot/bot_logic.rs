@@ -1,6 +1,8 @@
 // Bot logic module
 use crate::gemini::services::{escape_markdown, query_gemini_api};
+use crate::models::message_history::MessageHistory;
 use crate::models::user::User;
+use crate::utils::time::unix_timestamp;
 use crate::{utils, AppConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -8,7 +10,7 @@ use teloxide::dispatching::dialogue::GetChatId;
 use teloxide::dispatching::DefaultKey;
 use teloxide::prelude::*;
 use teloxide::types::{
-    InputFile, InputMessageContent, InputMessageContentText, ReplyParameters, Update,
+    InputFile, InputMessageContent, InputMessageContentText, ReplyParameters, Update, UpdateKind,
 };
 use teloxide::utils::command::BotCommands;
 use teloxide::utils::html;
@@ -39,8 +41,10 @@ enum Command {
     Generate(String),
     #[command(description = "handle a username and an age.", parse_with = "split")]
     UsernameAndAge { username: String, age: u8 },
-    #[command(description = "print developer information", parse_with = "split")]
+    #[command(description = "print developer information")]
     DeveloperInfo,
+    #[command(description = "create a new topic")]
+    NewTopic,
 }
 
 pub async fn setup_dispatcher(
@@ -72,28 +76,31 @@ pub async fn setup_dispatcher(
 }
 
 async fn before_handling(_bot: Bot, update: Update, config: Arc<AppConfig>) {
-    let chat_id = update.chat_id().expect("Could not retrive chat id!");
-    let chat = update.chat().unwrap();
-    if !chat.is_private() {
-        return;
-    }
-
-    let db = config.database.lock().await;
-    let user = match User::find_by_id(chat_id.0, &db).await.unwrap() {
-        Some(user) => user,
-        None => {
-            let user = User::new(
-                chat_id.0,
-                chat.username().map(String::from),
-                chat.first_name().map(String::from),
-                chat.last_name().map(String::from),
-            );
-            user.insert(&db).await.unwrap();
-            user
+    if let UpdateKind::Message(_msg) = &update.kind {
+        let chat_id = update.chat_id().expect("Could not retrive chat id!");
+        let chat = update.chat().unwrap();
+        if !chat.is_private() {
+            return;
         }
-    };
 
-    log::debug!("{:?}", user);
+        let sender_id = update.from().expect("Could not retrive sender id!").id.0 as i64;
+        let db = config.database.lock().await;
+        let user = match User::find_by_id(sender_id, &db).await.unwrap() {
+            Some(user) => user,
+            None => {
+                let user = User::new(
+                    chat_id.0,
+                    chat.username().map(String::from),
+                    chat.first_name().map(String::from),
+                    chat.last_name().map(String::from),
+                );
+                user.insert(&db).await.unwrap();
+                user
+            }
+        };
+
+        log::debug!("{:?}", user);
+    }
 }
 
 async fn message_handler(bot: Bot, msg: Message, config: Arc<AppConfig>) -> ResponseResult<()> {
@@ -130,6 +137,26 @@ async fn command_handler(
         }
         Command::DeveloperInfo => {
             send_developer_info(&bot, &msg).await?;
+        }
+        Command::NewTopic => {
+            let db = config.database.lock().await;
+            let sender_id = msg.from.unwrap().id.0 as i64;
+            match MessageHistory::delete_by_user_id(sender_id, &db).await {
+                Ok(()) => {
+                    let history = MessageHistory::new(sender_id as i64, Vec::new());
+                    history.insert(&db).await.ok();
+                    bot.send_message(msg.chat.id, "Your previous topic has been flushed.")
+                        .await?;
+                }
+                Err(err) => {
+                    log::error!("Error while flushing tipoc: {:?}", err);
+                    bot.send_message(
+                        msg.chat.id,
+                        "Something didnt go well, please try again later.",
+                    )
+                    .await?;
+                }
+            }
         }
     };
 
@@ -171,7 +198,70 @@ async fn generate_response(
         .await
         .unwrap();
 
-    let gemini_response = query_gemini_api(&text, None, config).await;
+    let mut history_data: Option<Vec<(String, String)>> = None;
+    let sender_id = msg.from.as_ref().unwrap().id.0 as i64;
+    {
+        let db = &config.database.lock().await;
+        let histroy = MessageHistory::find_by_user_id(sender_id, &db)
+            .await
+            .unwrap();
+        if let Some(history) = histroy {
+            if history.messages.len() > 0 {
+                history_data = Some(Vec::new());
+                for i in history.messages {
+                    if let Some(message) = crate::models::message::Message::find_by_id(i, &db)
+                        .await
+                        .unwrap()
+                    {
+                        history_data
+                            .as_mut()
+                            .unwrap()
+                            .push((message.content.unwrap(), message.response.unwrap()));
+                    }
+                }
+            }
+        }
+    }
+
+    let gemini_response = query_gemini_api(&text, None, &config, history_data).await;
+
+    {
+        let db = &config.database.lock().await;
+        let mut histroy = MessageHistory::find_by_user_id(sender_id, &db)
+            .await
+            .unwrap();
+        if let None = &histroy {
+            histroy = Some(MessageHistory::new(sender_id, Vec::new()));
+            _ = histroy.as_ref().unwrap().insert(&db).await;
+        }
+        let message = crate::models::message::Message::new(
+            msg.chat.id.0 as i64,
+            sender_id,
+            msg.id.0 as i64,
+            Some(text.to_string()),
+            Some(gemini_response.to_string()),
+            msg.date.timestamp(),
+        );
+        _ = message.insert(&db).await;
+        let _ = match crate::models::message::Message::find_by_message_and_chat_id(
+            msg.id.0 as i64,
+            msg.chat.id.0 as i64,
+            &db,
+        )
+        .await
+        .unwrap()
+        {
+            Some(msg) => {
+                histroy.as_mut().unwrap().messages.push(msg.id);
+                _ = histroy.as_ref().unwrap().update(&db).await;
+                Some(msg)
+            }
+            None => {
+                log::error!("Failed to store message in history! ");
+                None
+            }
+        };
+    }
 
     if gemini_response.len() >= 4096 {
         let file_path = std::env::temp_dir()
@@ -205,15 +295,15 @@ async fn generate_response(
                 .await?;
         }
     } else {
-        let res = bot
-            .edit_message_text(
-                msg.chat_id().unwrap(),
-                response_message.id,
-                format!("{}\r\n\r\n🌟 _*@zenithgeminibot*_", gemini_response),
-            )
-            .parse_mode(teloxide::types::ParseMode::MarkdownV2)
-            .await;
-        if res.is_err() {
+        // let res = bot
+        //     .edit_message_text(
+        //         msg.chat_id().unwrap(),
+        //         response_message.id,
+        //         format!("{}\r\n\r\n🌟 _*@zenithgeminibot*_", gemini_response),
+        //     )
+        //     .parse_mode(teloxide::types::ParseMode::MarkdownV2)
+        //     .await;
+        // if res.is_err() {
             // markdown especial chars may create error sometimes
             bot.edit_message_text(
                 msg.chat_id().unwrap(),
@@ -221,7 +311,7 @@ async fn generate_response(
                 format!("{}\r\n\r\n🌟 @zenithgeminibot", gemini_response),
             )
             .await?;
-        }
+        // }
     }
 
     Ok(())
@@ -258,13 +348,11 @@ async fn inline_handler(
 
         // User finished typing, process the query
         if current_query.ends_with("!!") {
-            let mut current_query_trimmed = current_query.clone();
-            current_query_trimmed.truncate(current_query_trimmed.len() - 2);
             process_gemini_request(
                 &bot_clone,
                 query_id,
                 user_id as i64,
-                current_query_trimmed,
+                current_query,
                 config,
                 user_states_clone,
             )
@@ -281,32 +369,100 @@ async fn process_gemini_request(
     bot: &Bot,
     query_id: String,
     user_id: i64,
-    query: String,
-    deps: Arc<AppConfig>,
+    query_text: String,
+    config: Arc<AppConfig>,
     user_states: UserStates,
 ) {
+    let mut history_data: Option<Vec<(String, String)>> = None;
+    let sender_id = user_id as i64;
+    {
+        let db = &config.database.lock().await;
+        let histroy = MessageHistory::find_by_user_id(sender_id, &db)
+            .await
+            .unwrap();
+        if let Some(history) = histroy {
+            if history.messages.len() > 0 {
+                history_data = Some(Vec::new());
+                for i in history.messages {
+                    if let Some(message) = crate::models::message::Message::find_by_id(i, &db)
+                        .await
+                        .unwrap()
+                    {
+                        history_data
+                            .as_mut()
+                            .unwrap()
+                            .push((message.content.unwrap(), message.response.unwrap()));
+                    }
+                }
+            }
+        }
+    }
+
     let query_result = query_gemini_api(
-        &query,
+        &query_text,
         Some(vec![
             "be extra precise",
             "do not exceed 4700 chars at any chance",
         ]),
-        deps,
+        &config,
+        history_data,
     )
     .await;
+
+    {
+        let db = &config.database.lock().await;
+        let mut histroy = MessageHistory::find_by_user_id(sender_id, &db)
+            .await
+            .unwrap();
+        if let None = &histroy {
+            histroy = Some(MessageHistory::new(sender_id, Vec::new()));
+            _ = histroy.as_ref().unwrap().insert(&db).await;
+        }
+        let _q = query_text.clone();
+        let message = crate::models::message::Message::new(
+            sender_id,
+            sender_id,
+            0,
+            Some(_q),
+            Some(query_result.to_string()),
+            unix_timestamp(),
+        );
+        _ = message.insert(&db).await;
+        let _ = match crate::models::message::Message::find_by_message_and_chat_id(
+            sender_id,
+            sender_id,
+            &db,
+        )
+        .await
+        .unwrap()
+        {
+            Some(msg) => {
+                histroy.as_mut().unwrap().messages.push(msg.id);
+                _ = histroy.as_ref().unwrap().update(&db).await;
+                Some(msg)
+            }
+            None => {
+                log::error!("Failed to store message in history! ");
+                None
+            }
+        };
+    }
+
+    let mut current_query_trimmed = query_text.clone();
+    current_query_trimmed.truncate(current_query_trimmed.len() - 2);
+
     let results = vec![teloxide::types::InlineQueryResultArticle::new(
         "1",
         format!(
             "Ask Gemini: {}\r\n{}",
-            &query,
+            &current_query_trimmed,
             utils::string::truncate_text(&query_result, 100)
         ),
         InputMessageContent::Text(
             InputMessageContentText::new(format!(
-                "{}\r\n\r\n🌟 _*@zenithgeminibot*_",
+                "{}\r\n\r\n🌟 @zenithgeminibot",
                 query_result
             ))
-            .parse_mode(teloxide::types::ParseMode::MarkdownV2),
         ),
     )
     .into()];

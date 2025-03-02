@@ -5,5 +5,6 @@ CREATE TABLE IF NOT EXISTS messages (
     sender_id INT,
     message_id INT,
     content TEXT NULL,
+    response TEXT NULL,
     created_at DATETIME DEFAULT CURRENT_TIMESTAMP
 );
