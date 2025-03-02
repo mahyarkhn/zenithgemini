@@ -1,5 +1,6 @@
 // Bot logic module
 use crate::gemini::services::{escape_markdown, query_gemini_api};
+use crate::models::user::User;
 use crate::{utils, AppConfig};
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -48,10 +49,11 @@ pub async fn setup_dispatcher(
     user_states: UserStates,
 ) -> Dispatcher<Bot, teloxide::RequestError, DefaultKey> {
     let handler = dptree::entry()
-        .inspect(|_u: Update| {
+        .inspect(|u: Update| {
             #[cfg(debug_assertions)]
-            eprintln!("{_u:#?}"); // Print the update to the console with inspect
+            log::debug!("Incoming request: {:?}", &u);
         })
+        .inspect_async(before_handling)
         .branch(
             Update::filter_message()
                 .branch(
@@ -67,6 +69,31 @@ pub async fn setup_dispatcher(
         .dependencies(dptree::deps![config, user_states])
         .enable_ctrlc_handler()
         .build()
+}
+
+async fn before_handling(_bot: Bot, update: Update, config: Arc<AppConfig>) {
+    let chat_id = update.chat_id().expect("Could not retrive chat id!");
+    let chat = update.chat().unwrap();
+    if !chat.is_private() {
+        return;
+    }
+
+    let db = config.database.lock().await;
+    let user = match User::find_by_id(chat_id.0, &db).await.unwrap() {
+        Some(user) => user,
+        None => {
+            let user = User::new(
+                chat_id.0,
+                chat.username().map(String::from),
+                chat.first_name().map(String::from),
+                chat.last_name().map(String::from),
+            );
+            user.insert(&db).await.unwrap();
+            user
+        }
+    };
+
+    log::debug!("{:?}", user);
 }
 
 async fn message_handler(bot: Bot, msg: Message, config: Arc<AppConfig>) -> ResponseResult<()> {
@@ -269,16 +296,23 @@ async fn process_gemini_request(
     .await;
     let results = vec![teloxide::types::InlineQueryResultArticle::new(
         "1",
-        format!("Ask Gemini: {}\r\n{}", &query, utils::string::truncate_text(&query_result, 100)),
+        format!(
+            "Ask Gemini: {}\r\n{}",
+            &query,
+            utils::string::truncate_text(&query_result, 100)
+        ),
         InputMessageContent::Text(
-            InputMessageContentText::new(format!("{}\r\n\r\n🌟 _*@zenithgeminibot*_", query_result))
-                .parse_mode(teloxide::types::ParseMode::MarkdownV2),
+            InputMessageContentText::new(format!(
+                "{}\r\n\r\n🌟 _*@zenithgeminibot*_",
+                query_result
+            ))
+            .parse_mode(teloxide::types::ParseMode::MarkdownV2),
         ),
     )
     .into()];
 
     if let Err(e) = bot.answer_inline_query(&query_id, results).await {
-        eprintln!("Error answering inline query: {}", e);
+        log::error!("Error answering inline query: {}", e);
     }
 
     // Clean up state
