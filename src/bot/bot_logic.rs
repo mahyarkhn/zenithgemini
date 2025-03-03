@@ -66,8 +66,8 @@ pub async fn setup_dispatcher(
                         .endpoint(command_handler),
                 )
                 .endpoint(message_handler),
-        )
-        .branch(Update::filter_inline_query().branch(dptree::entry().endpoint(inline_handler)));
+        );
+        //.branch(Update::filter_inline_query().branch(dptree::entry().endpoint(inline_handler))); // disabled, probebly causing stack overflow
 
     Dispatcher::builder(bot, handler)
         .dependencies(dptree::deps![config, user_states])
@@ -98,8 +98,6 @@ async fn before_handling(_bot: Bot, update: Update, config: Arc<AppConfig>) {
                 user
             }
         };
-
-        log::debug!("{:?}", user);
     }
 }
 
@@ -223,7 +221,7 @@ async fn generate_response(
         }
     }
 
-    let gemini_response = query_gemini_api(&text, None, &config, history_data).await;
+    let gemini_response = query_gemini_api(&Box::from(text.as_str()), &Arc::from(None), &config, &Arc::from(history_data)).await;
 
     {
         let db = &config.database.lock().await;
@@ -323,6 +321,7 @@ async fn inline_handler(
     config: Arc<AppConfig>,
     user_states: UserStates,
 ) -> ResponseResult<()> {
+    todo!("Fix stackoverflow problem");
     let user_id = query.from.id.0;
     let new_query = query.query.clone();
 
@@ -399,13 +398,13 @@ async fn process_gemini_request(
     }
 
     let query_result = query_gemini_api(
-        &query_text,
-        Some(vec![
+        &Box::from(query_text.as_str()),
+        &Arc::from(Some(vec![
             "be extra precise",
             "do not exceed 4700 chars at any chance",
-        ]),
+        ])),
         &config,
-        history_data,
+        &Arc::from(history_data),
     )
     .await;
 

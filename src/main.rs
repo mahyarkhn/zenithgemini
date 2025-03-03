@@ -32,7 +32,7 @@ async fn main() {
         }
     };
 
-    let config = AppConfig::new(database.unwrap());
+    let config = Arc::new(AppConfig::new(database.unwrap()));
     let user_states: UserStates = Arc::new(Mutex::new(HashMap::new()));
     let bot = Bot::from_env();
     let mut dispatcher = bot_logic::setup_dispatcher(bot, config, user_states).await;

@@ -1,5 +1,4 @@
 use std::env;
-use std::sync::Arc;
 use tokio::sync::Mutex;
 
 use crate::db::database::Database;
@@ -12,12 +11,12 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
-    pub fn new(database: Database) -> Arc<Self> {
+    pub fn new(database: Database) -> Self {
         let gemini_api_key =
             env::var("GEMINI_API_KEY").expect("GEMINI_API_KEY was not found in env");
-        Arc::new(Self {
+        Self {
             gemini_api_key,
             database: Mutex::new(database),
-        })
+        }
     }
 }
